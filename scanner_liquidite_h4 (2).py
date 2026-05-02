@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Scanner H4 — Prises de Liquidité | NQ & US30
-Version GitHub Actions — tourne une fois puis s'arrête
-"""
-
 import requests
 import yfinance as yf
 from datetime import datetime
@@ -39,14 +34,11 @@ def get_h4_data(ticker):
 def detect_grab(df, lookback=10):
     if len(df) < lookback + 3:
         return None
-
     idx          = -2
     candle       = df.iloc[idx]
     prev_candles = df.iloc[idx - lookback : idx]
-
     swing_high = prev_candles["High"].max()
     swing_low  = prev_candles["Low"].min()
-
     try:
         high_val  = float(candle["High"].iloc[0])
         low_val   = float(candle["Low"].iloc[0])
@@ -59,7 +51,6 @@ def detect_grab(df, lookback=10):
         close_val = float(candle["Close"])
         sh_val    = float(swing_high)
         sl_val    = float(swing_low)
-
     return {
         "bullish":    low_val  < sl_val and close_val > sl_val,
         "bearish":    high_val > sh_val and close_val < sh_val,
@@ -71,12 +62,14 @@ def detect_grab(df, lookback=10):
 
 print(f"[{datetime.now().strftime('%H:%M:%S')}] Vérification H4 en cours...")
 
+resultats = []
+
 for ticker, name in TICKERS.items():
     try:
         df     = get_h4_data(ticker)
         result = detect_grab(df, LOOKBACK)
         if result is None:
-            print(f"  [{name}] Pas assez de données.")
+            resultats.append(f"  {name} : pas assez de données")
             continue
 
         if result["bullish"]:
@@ -88,7 +81,7 @@ for ticker, name in TICKERS.items():
                 f"🕐 Bougie    : {result['time']}\n\n"
                 f"⚡ Stops vendeurs chassés → setup haussier potentiel"
             )
-            print(f"  [ALERTE] Grab HAUSSIER sur {name} @ {result['price']:.2f}")
+            resultats.append(f"  {name} : GRAB HAUSSIER @ {result['price']:.2f}")
 
         elif result["bearish"]:
             send_telegram(
@@ -99,12 +92,18 @@ for ticker, name in TICKERS.items():
                 f"🕐 Bougie    : {result['time']}\n\n"
                 f"⚡ Stops acheteurs chassés → setup baissier potentiel"
             )
-            print(f"  [ALERTE] Grab BAISSIER sur {name} @ {result['price']:.2f}")
+            resultats.append(f"  {name} : GRAB BAISSIER @ {result['price']:.2f}")
 
         else:
-            print(f"  [{name}] Aucun grab détecté.")
+            resultats.append(f"  {name} : aucun grab")
 
     except Exception as e:
-        print(f"  [ERREUR] {ticker} : {e}")
+        resultats.append(f"  {name} : ERREUR — {e}")
 
+rapport = "\n".join(resultats)
+send_telegram(
+    f"✅ <b>Scanner H4 — Vérification terminée</b>\n"
+    f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
+    f"{rapport}"
+)
 print("Vérification terminée.")
