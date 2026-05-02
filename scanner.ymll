@@ -1,0 +1,25 @@
+name: Scanner H4 Liquidité
+
+on:
+  schedule:
+    - cron: '5 0,4,8,12,16,20 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scanner:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Installer les dépendances
+        run: pip install yfinance requests
+
+      - name: Lancer le scanner
+        run: python "scanner_liquidite_h4 (2).py"
