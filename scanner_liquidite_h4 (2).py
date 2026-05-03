@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 import requests
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone
 
 TELEGRAM_TOKEN   = "8499381222:AAFanxc9zw8Cx5128FV_xyrWIufuL0heVV4"
 TELEGRAM_CHAT_ID = "1734502645"
-LOOKBACK         = 10
+
+LOOKBACK_H4  = 10
+LOOKBACK_M15 = 20
+WINDOW_H     = 4
 
 TICKERS = {
     "NQ=F": "🔵 Nasdaq (NQ)",
@@ -16,8 +19,8 @@ def send_telegram(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
         resp = requests.post(url, data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
+            "chat_id":    TELEGRAM_CHAT_ID,
+            "text":       message,
             "parse_mode": "HTML"
         }, timeout=10)
         if not resp.ok:
@@ -25,85 +28,89 @@ def send_telegram(message):
     except Exception as e:
         print(f"  [Telegram] Erreur : {e}")
 
-def get_h4_data(ticker):
-    df = yf.download(ticker, period="60d", interval="4h",
+def get_data(ticker, interval, period):
+    df = yf.download(ticker, period=period, interval=interval,
                      progress=False, auto_adjust=True)
     df.dropna(inplace=True)
     return df
 
-def detect_grab(df, lookback=10):
-    if len(df) < lookback + 3:
-        return None
-    idx          = -2
-    candle       = df.iloc[idx]
-    prev_candles = df.iloc[idx - lookback : idx]
-    swing_high = prev_candles["High"].max()
-    swing_low  = prev_candles["Low"].min()
-    try:
-        high_val  = float(candle["High"].iloc[0])
-        low_val   = float(candle["Low"].iloc[0])
-        close_val = float(candle["Close"].iloc[0])
-        sh_val    = float(swing_high.iloc[0])
-        sl_val    = float(swing_low.iloc[0])
-    except Exception:
-        high_val  = float(candle["High"])
-        low_val   = float(candle["Low"])
-        close_val = float(candle["Close"])
-        sh_val    = float(swing_high)
-        sl_val    = float(swing_low)
-    return {
-        "bullish":    low_val  < sl_val and close_val > sl_val,
-        "bearish":    high_val > sh_val and close_val < sh_val,
-        "price":      close_val,
-        "swing_high": sh_val,
-        "swing_low":  sl_val,
-        "time":       df.index[idx],
-    }
+def detect_grabs(df, lookback):
+    grabs = []
+    for i in range(lookback + 1, len(df) - 1):
+        candle       = df.iloc[i]
+        prev_candles = df.iloc[i - lookback : i]
+        swing_high = prev_candles["High"].max()
+        swing_low  = prev_candles["Low"].min()
+        try:
+            high_val  = float(candle["High"].iloc[0])
+            low_val   = float(candle["Low"].iloc[0])
+            close_val = float(candle["Close"].iloc[0])
+            sh_val    = float(swing_high.iloc[0])
+            sl_val    = float(swing_low.iloc[0])
+        except Exception:
+            high_val  = float(candle["High"])
+            low_val   = float(candle["Low"])
+            close_val = float(candle["Close"])
+            sh_val    = float(swing_high)
+            sl_val    = float(swing_low)
+        ts = df.index[i]
+        if not hasattr(ts, 'tzinfo') or ts.tzinfo is None:
+            ts = ts.tz_localize('UTC')
+        if high_val > sh_val and close_val < sh_val:
+            grabs.append({"direction": "bearish", "price": close_val,
+                          "swing_high": sh_val, "swing_low": sl_val, "time": ts})
+        elif low_val < sl_val and close_val > sl_val:
+            grabs.append({"direction": "bullish", "price": close_val,
+                          "swing_high": sh_val, "swing_low": sl_val, "time": ts})
+    return grabs
 
-print(f"[{datetime.now().strftime('%H:%M:%S')}] Vérification H4 en cours...")
+def check_confirmation(ticker, name):
+    now = datetime.now(timezone.utc)
+    df_h4 = get_data(ticker, "4h", "30d")
+    grabs_h4 = detect_grabs(df_h4, LOOKBACK_H4)
+    recent_h4 = [g for g in grabs_h4
+                 if (now - g["time"]).total_seconds() <= 8 * 3600]
+    if not recent_h4:
+        print(f"  [{name}] Aucun grab H4 récent.")
+        return
+    print(f"  [{name}] {len(recent_h4)} grab(s) H4 récent(s).")
+    df_m15 = get_data(ticker, "15m", "5d")
+    grabs_m15 = detect_grabs(df_m15, LOOKBACK_M15)
+    for h4 in recent_h4:
+        h4_time    = h4["time"]
+        h4_dir     = h4["direction"]
+        window_end = h4_time.timestamp() + WINDOW_H * 3600
+        for m15 in grabs_m15:
+            m15_time = m15["time"]
+            if not hasattr(m15_time, 'tzinfo') or m15_time.tzinfo is None:
+                m15_time = m15_time.tz_localize('UTC')
+            in_window = h4_time.timestamp() < m15_time.timestamp() <= window_end
+            same_dir  = m15["direction"] == h4_dir
+            if in_window and same_dir:
+                emoji = "🟢" if h4_dir == "bullish" else "🔴"
+                label = "HAUSSIÈRE" if h4_dir == "bullish" else "BAISSIÈRE"
+                ssl_bsl = f"🔻 SSL sweepé : {h4['swing_low']:.2f}" if h4_dir == "bullish" else f"🔺 BSL sweepé : {h4['swing_high']:.2f}"
+                send_telegram(
+                    f"{emoji} <b>CONFIRMATION H4 + M15 — {label}</b>\n"
+                    f"📊 {name}\n\n"
+                    f"<b>— Grab H4 —</b>\n"
+                    f"🕐 {h4_time.strftime('%d/%m %H:%M')} UTC\n"
+                    f"💰 Prix : {h4['price']:.2f}\n"
+                    f"{ssl_bsl}\n\n"
+                    f"<b>— Confirmation M15 —</b>\n"
+                    f"🕐 {m15_time.strftime('%d/%m %H:%M')} UTC\n"
+                    f"💰 Prix : {m15['price']:.2f}\n\n"
+                    f"⚡ <b>Setup confirmé — H4 + M15 alignés !</b>"
+                )
+                print(f"  [ALERTE] Confirmation {h4_dir} sur {name} !")
+                return
+    print(f"  [{name}] Grab H4 détecté mais pas de confirmation M15.")
 
-resultats = []
-
+print(f"[{datetime.now().strftime('%H:%M:%S')}] Scanner H4 + M15 en cours...")
 for ticker, name in TICKERS.items():
     try:
-        df     = get_h4_data(ticker)
-        result = detect_grab(df, LOOKBACK)
-        if result is None:
-            resultats.append(f"  {name} : pas assez de données")
-            continue
-
-        if result["bullish"]:
-            send_telegram(
-                f"🟢 <b>H4 — Prise de liquidité HAUSSIÈRE</b>\n"
-                f"📊 {name}\n\n"
-                f"💰 Clôture   : <b>{result['price']:.2f}</b>\n"
-                f"🔻 SSL sweepé : {result['swing_low']:.2f}\n"
-                f"🕐 Bougie    : {result['time']}\n\n"
-                f"⚡ Stops vendeurs chassés → setup haussier potentiel"
-            )
-            resultats.append(f"  {name} : GRAB HAUSSIER @ {result['price']:.2f}")
-
-        elif result["bearish"]:
-            send_telegram(
-                f"🔴 <b>H4 — Prise de liquidité BAISSIÈRE</b>\n"
-                f"📊 {name}\n\n"
-                f"💰 Clôture   : <b>{result['price']:.2f}</b>\n"
-                f"🔺 BSL sweepé : {result['swing_high']:.2f}\n"
-                f"🕐 Bougie    : {result['time']}\n\n"
-                f"⚡ Stops acheteurs chassés → setup baissier potentiel"
-            )
-            resultats.append(f"  {name} : GRAB BAISSIER @ {result['price']:.2f}")
-
-        else:
-            resultats.append(f"  {name} : aucun grab")
-
+        check_confirmation(ticker, name)
     except Exception as e:
-        resultats.append(f"  {name} : ERREUR — {e}")
-
-rapport = "\n".join(resultats)
-send_telegram(
-    f"✅ <b>Scanner H4 — Vérification terminée</b>\n"
-    f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')}\n\n"
-    f"{rapport}"
-)
+        print(f"  [ERREUR] {ticker} : {e}")
+        send_telegram(f"⚠️ Erreur sur {name} : {e}")
 print("Vérification terminée.")
