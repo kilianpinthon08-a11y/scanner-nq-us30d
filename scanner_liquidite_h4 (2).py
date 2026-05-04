@@ -71,9 +71,7 @@ def check_confirmation(ticker, name):
     recent_h4 = [g for g in grabs_h4
                  if (now - g["time"]).total_seconds() <= 8 * 3600]
     if not recent_h4:
-        print(f"  [{name}] Aucun grab H4 récent.")
-        return
-    print(f"  [{name}] {len(recent_h4)} grab(s) H4 récent(s).")
+        return f"  {name} : aucun grab H4 récent"
     df_m15 = get_data(ticker, "15m", "5d")
     grabs_m15 = detect_grabs(df_m15, LOOKBACK_M15)
     for h4 in recent_h4:
@@ -102,15 +100,23 @@ def check_confirmation(ticker, name):
                     f"💰 Prix : {m15['price']:.2f}\n\n"
                     f"⚡ <b>Setup confirmé — H4 + M15 alignés !</b>"
                 )
-                print(f"  [ALERTE] Confirmation {h4_dir} sur {name} !")
-                return
-    print(f"  [{name}] Grab H4 détecté mais pas de confirmation M15.")
+                return f"  {name} : ALERTE envoyée ! {h4_dir}"
+    return f"  {name} : grab H4 détecté mais pas encore de confirmation M15"
 
 print(f"[{datetime.now().strftime('%H:%M:%S')}] Scanner H4 + M15 en cours...")
+
+resultats = []
 for ticker, name in TICKERS.items():
     try:
-        check_confirmation(ticker, name)
+        res = check_confirmation(ticker, name)
+        resultats.append(res)
     except Exception as e:
-        print(f"  [ERREUR] {ticker} : {e}")
-        send_telegram(f"⚠️ Erreur sur {name} : {e}")
+        resultats.append(f"  {name} : ERREUR — {e}")
+
+rapport = "\n".join(resultats)
+send_telegram(
+    f"🔍 <b>Scanner H4 + M15 — Rapport</b>\n"
+    f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M')} UTC\n\n"
+    f"{rapport}"
+)
 print("Vérification terminée.")
